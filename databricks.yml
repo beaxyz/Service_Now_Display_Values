@@ -1,0 +1,89 @@
+# Databricks asset bundle – required for the Databricks extension to treat this as a project.
+# See https://docs.databricks.com/dev-tools/bundles/index.html
+
+bundle:
+  name: service_now_display_values
+
+variables:
+  catalog:
+    description: "Unity Catalog catalog for ServiceNow tables"
+    default: "field_demos"
+  schema:
+    description: "Schema within the catalog"
+    default: "bliew_snow_test"
+  source_schema:
+    description: "Source schema for ServiceNow tables"
+    default: "default"
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://e2-dogfood.staging.cloud.databricks.com
+      profile: dogfood
+
+resources:
+  pipelines:
+    ingest_servicenow_pipeline:
+      name: "servicenow_bliew_ingestion"
+      serverless: true
+      catalog: ${var.catalog}
+      schema: ${var.schema}
+      ingestion_definition:
+        connection_name: "servicenow-latest"
+        objects:
+          - table:
+              source_table: "sys_dictionary"
+              source_schema: ${var.source_schema}
+              destination_catalog: ${var.catalog}
+              destination_schema: ${var.schema}
+          - table:
+              source_table: "sys_db_object"
+              source_schema: ${var.source_schema}
+              destination_catalog: ${var.catalog}
+              destination_schema: ${var.schema}
+
+    extract_display_pipeline:
+      name: "Extract Display Values"
+      serverless: true
+      catalog: ${var.catalog}
+      schema: ${var.schema}
+      libraries:
+        - file:
+            path: pipelines/extract_display.py
+      configuration:
+        "catalog": ${var.catalog}
+        "schema": ${var.schema}
+        "source_schema": "default"
+        "pipeline_name": "servicenow_bliew_ingestion"
+        "connection_name": "servicenow-latest"
+
+  jobs:
+    ingest_job:
+      name: "Ingest ServiceNow Tables & Extract Display Values"
+      tasks:
+        - task_key: discover_tables
+          spark_python_task:
+            python_file: pipelines/ingest_service_now.py
+          environment_key: default
+
+        - task_key: ingest_servicenow_tables
+          depends_on:
+          - task_key: discover_tables
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.ingest_servicenow_pipeline.id}
+
+        - task_key: extract_display_values
+          depends_on:
+          - task_key: ingest_servicenow_tables
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.extract_display_pipeline.id}
+
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "1"
+            dependencies:
+              - databricks-sdk>=0.79.0
+              - python-dotenv
