@@ -99,7 +99,7 @@ class IngestionManager:
       if key != "table"  # skip the "table" key, keep only parent_lv_N values
     ))
     
-    return list(dict.fromkeys(table_list + reference_table_list + parent_table_list))
+    return list(dict.fromkeys(table_list + reference_table_list))
 
 
   def get_existing_pipeline_tables(self):

@@ -44,6 +44,21 @@ resources:
               destination_catalog: ${var.catalog}
               destination_schema: ${var.schema}
 
+    mapping_table_pipeline:
+      name: "Display Value Mapping Table"
+      serverless: true
+      catalog: ${var.catalog}
+      schema: ${var.schema}
+      libraries:
+        - file:
+            path: pipelines/mapping_table.py
+      configuration:
+        "catalog": ${var.catalog}
+        "schema": ${var.schema}
+        "source_schema": "default"
+        "pipeline_name": "servicenow_bliew_ingestion"
+        "connection_name": "servicenow-latest"
+
     extract_display_pipeline:
       name: "Extract Display Values"
       serverless: true
@@ -70,13 +85,19 @@ resources:
 
         - task_key: ingest_servicenow_tables
           depends_on:
-          - task_key: discover_tables
+            - task_key: discover_tables
           pipeline_task:
             pipeline_id: ${resources.pipelines.ingest_servicenow_pipeline.id}
 
+        - task_key: materialize_mapping_table
+          depends_on:
+            - task_key: ingest_servicenow_tables
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.mapping_table_pipeline.id}
+
         - task_key: extract_display_values
           depends_on:
-          - task_key: ingest_servicenow_tables
+            - task_key: materialize_mapping_table
           pipeline_task:
             pipeline_id: ${resources.pipelines.extract_display_pipeline.id}
 

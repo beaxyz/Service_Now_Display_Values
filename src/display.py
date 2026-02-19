@@ -2,16 +2,18 @@ from pyspark.sql import functions as F
 from pyspark.sql import types as T
 from pyspark.sql import Row
 from config import *
-
+from src.ingestion import IngestionManager
 ####LAKEFLOW DECLARATIVE PIPELINES######
 # To build up a view of the display columns for each table: 
 
 class DisplayValue:
-  def __init__(self, spark, catalog, schema, sys_col_names):
+  def __init__(self, spark, catalog, schema, sys_col_names, ingestion_manager = None):
     self.spark = spark
     self.catalog = catalog
     self.schema = schema
     self.sys_col_names = sys_col_names
+    self.ingestion_manager = ingestion_manager
+
 
     self.df_sys_dict = self.spark.read.table(f"{self.catalog}.{self.schema}.sys_dictionary")
     self.df_sys_db_object = self.spark.read.table(f"{self.catalog}.{self.schema}.sys_db_object")
@@ -19,10 +21,10 @@ class DisplayValue:
   #Check if the table has a display value = True flag in the sys_dictionary table
   def check_display_true(
     self,
-    table
+    table_list 
   ):
     rows = (
-        self.df_sys_dict.filter((F.col("display") == True) & (F.col("name") == table))
+        self.df_sys_dict.filter((F.col("display") == True) & (F.col("name").isin(table_list)))
         .select("name", "element", "display")
         .collect()
     )
@@ -31,19 +33,33 @@ class DisplayValue:
   # Get a list of elements of the table and cross check against the sys_col_names reference and return if it matches
   def get_elements(
     self, 
-    table
+    table_list
     ) -> str:
-      elements = (
-          self.df_sys_dict.filter((F.col("name") == table))
-          .select("element")
-          .distinct()
-          .collect()
-      )
 
-      element_set = {row[0] for row in elements if row[0] and str(row[0]).strip()}
-      display_col = next((col for col in self.sys_col_names if col in element_set), None)
+    elements = (
+        self.df_sys_dict.filter((F.col("name").isin(table_list)))
+        .select("element")
+        .distinct()
+        .collect()
+    )
 
-      return display_col
+    element_set = {row[0] for row in elements if row[0] and str(row[0]).strip()}
+    display_col = next((col for col in self.sys_col_names if col in element_set), None)
+
+    element_row = (self.df_sys_dict.filter(
+        (F.col("name").isin(table_list)) & (F.col("element") == display_col)
+    )
+    .select("name")
+    .first())
+    
+    if element_row is not None:
+       element_table = element_row[0]
+
+    else:
+      element_table = None
+    
+    return element_table, display_col
+
 
   # Returns true if the display value is a reference field (ie: contains link)
   def check_if_display_is_reference(
@@ -79,7 +95,8 @@ class DisplayValue:
   def return_display_value_if_reference(
     self,
     table,
-    display_field
+    display_field,
+    ingestion_manager = None
     ):
 
       if self.check_if_display_is_reference(table, display_field ):
@@ -98,7 +115,8 @@ class DisplayValue:
               b = self.spark.read.table(f"{self.catalog}.{self.schema}.{reference_table}").alias("b")
 
               display_value_list = self.get_display_value(
-                [reference_table]
+                [reference_table],
+                ingestion_manager
               )
 
               display_value = display_value_list[0]["element"]
@@ -111,143 +129,92 @@ class DisplayValue:
   # Get display value
   def get_display_value(
     self,
-    table_list
+    table_list,
+    ingestion_manager=None
     ) -> list(dict()):
 
       display_list = []
+      im = ingestion_manager
       for table in table_list:
-        # 1) Checks if the table in sys_dict has a display value = True flag. If so return the field
-          rows = self.check_display_true(table)
 
-          for row in rows:
-            # 1 a) Checks if the display field is a reference field. If yes, then look up the reference table for the display column
-            is_display_reference_field = self.check_if_display_is_reference(row['name'],row['element'])
+        # 1) Checks if the table in sys_dict has a display value = True flag. If so return the field. This includes the parents of the table
+          table_with_parents = im.get_table_with_ancestors([table])
+          table_dict = next(a for a in table_with_parents if a["table"] == table)
+          # Limit to one level: table + direct parent only (avoids grandparents not in catalog, e.g. sttrm_model)
+          table_with_parents_list = [table_dict["table"]]
+          if "parent_lv_0" in table_dict:
+            table_with_parents_list.append(table_dict["parent_lv_0"])
+          # If parent equals table (self-reference in hierarchy, e.g. cmdb_ci_service), dedupe so we only query once and get one row
+          print(table_with_parents_list)
+          table_with_parents_list = list(dict.fromkeys(table_with_parents_list))
 
-            if is_display_reference_field:
-              reference_fields = self.return_display_value_if_reference(
-                row['name'],
-                row['element']
+          rows = self.check_display_true(table_with_parents_list)
+          if len(rows) <=1:
+            for row in rows:
+              # 1 a) Checks if the display field is a reference field. If yes, then look up the reference table for the display column
+              is_display_reference_field = self.check_if_display_is_reference(table, row['element'])
+
+              if is_display_reference_field:
+                reference_fields = self.return_display_value_if_reference(
+                  table,
+                  row['element'],
+                  im
+                )
+                display_value = reference_fields['display_value']
+                reference_table_for_display_value = reference_fields['reference_table']
+
+              else:
+                reference_table_for_display_value = None
+                display_value = row['element']
+
+
+              display_list.append(
+                  {
+                      "table": table,
+                      "element": row["element"],
+                      "display_flag": row["display"],
+                      "is_display_from_parent": True if table_with_parents_list[0] != row["name"] else False,
+                      "parent_table": row["name"] if table_with_parents_list[0] != row["name"] else None,
+                      "is_display_reference_field": is_display_reference_field,
+                      "reference_table_for_display_value": reference_table_for_display_value,
+                      "display_value":  display_value
+                      }
               )
-              display_value = reference_fields['display_value']
-              reference_table_for_display_value = reference_fields['reference_table']
 
-            else:
-              reference_table_for_display_value = None
-              display_value = row['element']
-
-            display_list.append(
-                {
-                    "table": row["name"],
-                    "element": row["element"],
-                    "display_flag": row["display"],
-                    "has_parent": None,
-                    "parent_table": None,
-                    "is_display_reference_field": is_display_reference_field,
-                    "reference_table_for_display_value": reference_table_for_display_value,
-                    "display_value":  display_value
-                    }
-            )
-
-          # 2) If there is no display = True value, check if it has a name, u_name or number column. Assumption is that these fields are not reference fields
+        # 2) If there is no display = True value, check if it has a name, u_name or number column. Assumption is that these fields are not reference fields
           if not rows:
             
-            display_col = self.get_elements(table)
+            element_table, display_col = self.get_elements(table_with_parents_list)
+
             if display_col is not None:
               display_list.append(
                   {
                       "table": table,
                       "element": display_col,
                       "display_flag": False,
-                      "has_parent": None,
-                      "parent_table": None,
-                      "is_display_reference_field": False,
-                      "reference_table_for_display_value":None,
-                      "display_value":display_col 
-                      }
-              )
-            # If it has no name/number col & no display col        
-            elif display_col is None:
-              # Check for parent table
-              parent = self.df_sys_db_object.filter(F.col("name")== table).select("super_class").first()
-
-              # 2 a) If it has a parent class, look up the parent's display flag first. If it exists, check if it's a ref field.
-              if parent is not None and parent['super_class'] is not None: 
-
-                a = (self.df_sys_db_object
-                      .filter(F.col("name")== table)
-                      .select("name","super_class")
-                      ).alias("a")
-                
-                b = self.df_sys_db_object.alias("b")
-
-                parent_class = (a.join(b, 
-                                        F.col("a.super_class.value") == F.col("b.sys_id")
-                                        )
-                                .select(
-                                  F.col("b.name").alias("parent_table")
-                                )).collect()[0]['parent_table']
-            
-                rows = self.check_display_true(parent_class)
-
-                # Checks if the parent display value from sys_dict is a reference field. If yes, look up the actual field
-                if len(rows)>=1:
-                  for row in rows:
-                    is_display_reference_field = self.check_if_display_is_reference(row['name'],row['element'])
-                    
-                    if is_display_reference_field:
-                      reference_fields = self.return_display_value_if_reference(
-                        row['name'],
-                        row['element']
-                      )
-
-                    else:
-                      reference_table_for_display_value = None
-                      display_value = row['element']
-
-                    display_list.append(
-                        {
-                          "table": table,
-                          "element": None,
-                          "display_flag": False,
-                          "has_parent": "Y",
-                          "parent_table": row['name'],
-                          "is_display_reference_field": is_display_reference_field,
-                          "reference_table_for_display_value":reference_table_for_display_value,
-                          "display_value":  display_value
-                          }
-                        )
-
-                #2 b) If parent table doesn't have display flag true in sys_dictionary, search for display value using elements in sys_dictionary that matches name, u_name & number.
-                elif not rows:
-                  parent_display_col = self.get_elements(parent_class)
-
-                  display_list.append(
-                  {
-                      "table": table,
-                      "element": None,
-                      "display_flag": False,
-                      "has_parent": "Y",
-                      "parent_table": parent_class,
+                      "is_display_from_parent": True if element_table != table else False,
+                      "parent_table": element_table if element_table != table else None,
                       "is_display_reference_field": False,
                       "reference_table_for_display_value": None,
-                      "display_value":  parent_display_col
-                      })
-          
-              #3) Else no display values, no parent & no element match
-              else:
-                display_list.append(
-                  {
-                    "table": table,
-                    "element": None,
-                    "display_flag": False,
-                    "has_parent": "N",
-                    "parent_table": None,
-                    "is_display_reference_field": False,
-                    "reference_table_for_display_value": None,
-                    "display_value": None
-                  }
-                )
+                      "display_value": display_col
+                      }
+              )
 
+              #3) Else no display values, no parent & no element match
+            else:
+              display_list.append(
+                {
+                  "table": table,
+                  "element": None,
+                  "display_flag": False,
+                  "is_display_from_parent": False,
+                  "parent_table": None,
+                  "is_display_reference_field": False,
+                  "reference_table_for_display_value": None,
+                  "display_value": None
+                }
+              )
+                  
       return display_list
   
 ##### LAKEFLOW DECLARATIVE PIPELINE #####
