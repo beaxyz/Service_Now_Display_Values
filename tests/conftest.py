@@ -11,8 +11,12 @@ def pytest_addoption(parser):
 
 
 def pytest_collection_modifyitems(config, items):
-    if not config.getoption("--run-integration"):
-        skip = pytest.mark.skip(reason="needs --run-integration")
+    # Only skip tests that are explicitly marked @pytest.mark.integration (unit tests have no marker)
+    on_databricks = "DATABRICKS_RUNTIME_VERSION" in os.environ
+    run_integration = config.getoption("--run-integration") or on_databricks
+
+    if not run_integration:
+        skip = pytest.mark.skip(reason="needs --run-integration (or run on Databricks)")
         for item in items:
-            if "integration" in item.keywords:
+            if item.get_closest_marker("integration") is not None:
                 item.add_marker(skip)
