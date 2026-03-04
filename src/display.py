@@ -101,7 +101,7 @@ class DisplayValue:
 
       if self.check_if_display_is_reference(table, display_field ):
           df_table = self.spark.read.table(f"{self.catalog}.{self.schema}.{table}")
-          first_row = df_table.select(F.col(display_field)).first()
+          first_row = df_table.select(F.col(display_field)).filter(F.col(display_field).isNotNull()).first()
           if first_row is None or first_row[0] is None:
               print(f"Table '{table}' is empty or '{display_field}' is null in first row")
               return None
@@ -261,15 +261,17 @@ class DisplayValue:
           F.col(f"{row['sys_name']}_display").getField("value") == reference_table_for_display_value_df.ref_sys_id,
           'left'
         )
-        .drop(f"{row['sys_name']}_display")
-        .select(
-          *[c for c in table_ref_joined_df.columns if c != f"{row['sys_name']}_display"],
-          F.col(f"{row['sys_name']}_ref_display").alias(f"{row['sys_name']}_display"))
+        .drop(f"{row['sys_name']}_display", row['sys_name'])
+        .withColumnRenamed(f"{row['sys_name']}_ref_display", row['sys_name'])
         )
         
         return table_ref_joined_df
     
       else:
+        table_ref_joined_df = (table_ref_joined_df
+          .drop(row['sys_name'])
+          .withColumnRenamed(f"{row['sys_name']}_display", row['sys_name'])
+        )
         return table_ref_joined_df
       
     else: 
