@@ -232,6 +232,9 @@ class DisplayValue:
     col_type = base_df.schema[row['sys_name']].dataType
     
     if row['element'] is not None and isinstance(col_type, T.StructType):
+      if row['sys_name'] == 'sys_domain':
+        return base_df.withColumn(row['sys_name'], F.col(row['sys_name']).getField("value"))
+
       ref_df = (self.spark.read.table(f"{self.catalog}.{self.schema}.{row['reference_table']}")
                 .select(
                   F.col("sys_id").alias("ref_sys_id"), 
