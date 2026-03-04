@@ -261,7 +261,7 @@ class DisplayValue:
           F.col(f"{row['sys_name']}_display").getField("value") == reference_table_for_display_value_df.ref_sys_id,
           'left'
         )
-        .drop(f"{row['sys_name']}_display", row['sys_name'])
+        .drop(f"{row['sys_name']}_display", row['sys_name'], "ref_sys_id")
         .withColumnRenamed(f"{row['sys_name']}_ref_display", row['sys_name'])
         )
         
