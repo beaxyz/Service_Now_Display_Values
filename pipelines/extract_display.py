@@ -32,6 +32,7 @@ sys.path.insert(0, _find_project_root())
 import config
 from pyspark import pipelines as dp
 from pyspark.sql import functions as F
+from pyspark.sql import types as T
 from src.display import DisplayValue
 from src.ingestion import IngestionManager
 from src.session import get_spark_and_client
@@ -83,6 +84,10 @@ def create_dp_table(table):
         base_df,
         row
         )
+
+    if 'sys_domain' in base_df.columns and isinstance(base_df.schema['sys_domain'].dataType, T.StringType):
+      base_df = base_df.withColumn('sys_domain', F.get_json_object(F.col('sys_domain'), '$.value'))
+
     return base_df
 
   globals()[f"{_table}_display"] = _view
