@@ -181,14 +181,22 @@ class TestDisplayTables:
             f"{display_name} not found in {catalog}.{schema}"
 
     @pytest.mark.parametrize("table", table_list)
-    def test_display_table_has_display_columns(self, table):
-        """*_display table should have at least one _display column."""
-        full_name = f"{catalog}.{schema}.{table}_display"
-        df = self.spark.read.table(full_name)
-        display_cols = [c for c in df.columns if c.endswith("_display")]
-        print(f"[{table}] display columns ({len(display_cols)}): {display_cols}")
-        assert len(display_cols) > 0, \
-            f"{full_name} has no *_display columns"
+    def test_display_table_has_resolved_columns(self, table):
+        """Reference columns in *_display table should be resolved (non-struct)."""
+        base_df = self.spark.read.table(f"{catalog}.{schema}.{table}")
+        display_df = self.spark.read.table(f"{catalog}.{schema}.{table}_display")
+        struct_cols_in_base = [
+            f.name for f in base_df.schema.fields
+            if isinstance(f.dataType, T.StructType)
+        ]
+        resolved = [
+            c for c in struct_cols_in_base
+            if c in display_df.columns
+            and not isinstance(display_df.schema[c].dataType, T.StructType)
+        ]
+        print(f"[{table}] resolved columns ({len(resolved)}): {resolved}")
+        assert len(resolved) > 0, \
+            f"{catalog}.{schema}.{table}_display has no resolved reference columns"
 
     @pytest.mark.parametrize("table", table_list)
     def test_display_table_row_count_matches_base(self, table):
@@ -257,41 +265,38 @@ class TestDisplayExtractionAccuracy:
         return struct_fields
 
     @pytest.mark.parametrize("table", table_list)
-    def test_display_column_count_matches_struct_reference_fields(self, table):
-        """# of _display columns in display table == struct ref fields + native _display cols from base."""
+    def test_resolved_column_count_matches_struct_reference_fields(self, table):
+        """# of resolved (struct→non-struct) columns in display table == struct ref fields in base."""
         struct_ref_fields = self._get_struct_reference_fields(table)
 
         base_df = self.spark.read.table(f"{catalog}.{schema}.{table}")
-        native_display_cols = [c for c in base_df.columns if c.endswith("_display")]
-
         display_df = self.spark.read.table(f"{catalog}.{schema}.{table}_display")
-        all_display_cols = [c for c in display_df.columns if c.endswith("_display")]
 
-        expected_count = len(struct_ref_fields) + len(native_display_cols)
-        actual_count = len(all_display_cols)
+        resolved_cols = [
+            f for f in struct_ref_fields
+            if f in display_df.columns
+            and not isinstance(display_df.schema[f].dataType, T.StructType)
+        ]
 
-        # Debug: show total columns in both tables to spot schema issues
         print(
             f"[{table}] base table cols: {len(base_df.columns)}, "
             f"display table cols: {len(display_df.columns)}\n"
             f"  struct ref fields: {len(struct_ref_fields)}, "
-            f"native _display cols in base: {len(native_display_cols)}, "
-            f"total _display cols in display table: {actual_count}\n"
+            f"resolved cols: {len(resolved_cols)}\n"
             f"  ref fields: {sorted(struct_ref_fields)}\n"
-            f"  native: {sorted(native_display_cols)}\n"
-            f"  all display cols: {sorted(all_display_cols)}\n"
+            f"  resolved: {sorted(resolved_cols)}\n"
             f"  display table ALL cols: {sorted(display_df.columns)}"
         )
 
-        assert actual_count == expected_count, (
-            f"{table}: expected {expected_count} _display columns "
-            f"({len(struct_ref_fields)} from ref fields + {len(native_display_cols)} native) "
-            f"but found {actual_count}"
+        assert len(resolved_cols) == len(struct_ref_fields), (
+            f"{table}: expected {len(struct_ref_fields)} resolved columns "
+            f"but found {len(resolved_cols)}. "
+            f"Unresolved: {sorted(set(struct_ref_fields) - set(resolved_cols))}"
         )
 
     @pytest.mark.parametrize("table", table_list)
-    def test_display_column_nonnull_within_base_nonnull(self, table):
-        """For each struct reference field, display non-null count should be
+    def test_resolved_column_nonnull_within_base_nonnull(self, table):
+        """For each struct reference field, resolved non-null count should be
         <= base non-null count (some refs may not have matching records)."""
         struct_ref_fields = self._get_struct_reference_fields(table)
         if not struct_ref_fields:
@@ -302,10 +307,8 @@ class TestDisplayExtractionAccuracy:
         display_df = self.spark.read.table(f"{catalog}.{schema}.{table}_display")
 
         for ref_field in struct_ref_fields:
-            display_col = f"{ref_field}_display"
-
-            if display_col not in display_df.columns:
-                print(f"[{table}] {display_col} not in display table, skipping")
+            if ref_field not in display_df.columns:
+                print(f"[{table}] {ref_field} not in display table, skipping")
                 continue
 
             base_nonnull = base_df.filter(
@@ -313,7 +316,7 @@ class TestDisplayExtractionAccuracy:
             ).count()
 
             display_nonnull = display_df.filter(
-                F.col(display_col).isNotNull()
+                F.col(ref_field).isNotNull()
             ).count()
 
             match_rate = (display_nonnull / base_nonnull * 100) if base_nonnull > 0 else 100.0
@@ -321,7 +324,7 @@ class TestDisplayExtractionAccuracy:
             print(
                 f"[{table}.{ref_field}] "
                 f"base non-null: {base_nonnull}, "
-                f"display non-null: {display_nonnull}, "
+                f"resolved non-null: {display_nonnull}, "
                 f"match rate: {match_rate:.1f}%"
             )
 
@@ -333,7 +336,7 @@ class TestDisplayExtractionAccuracy:
                 )
 
             assert display_nonnull <= base_nonnull, (
-                f"{table}.{display_col}: display has {display_nonnull} non-null rows "
+                f"{table}.{ref_field}: resolved has {display_nonnull} non-null rows "
                 f"but base only has {base_nonnull} non-null refs — "
-                f"display should never exceed base"
+                f"resolved should never exceed base"
             )

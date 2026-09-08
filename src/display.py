@@ -101,7 +101,11 @@ class DisplayValue:
 
       if self.check_if_display_is_reference(table, display_field ):
           df_table = self.spark.read.table(f"{self.catalog}.{self.schema}.{table}")
-          display_col = df_table.select(F.col(display_field)).first()[0]
+          first_row = df_table.select(F.col(display_field)).filter(F.col(display_field).isNotNull()).first()
+          if first_row is None or first_row[0] is None:
+              print(f"Table '{table}' is empty or '{display_field}' is null in first row")
+              return None
+          display_col = first_row[0]
 
           link = (
               display_col.get("link")
@@ -109,7 +113,7 @@ class DisplayValue:
               else getattr(display_col, "link", None)
           )
 
-          if "/table/" in link:
+          if link and "/table/" in link:
               reference_table = link.split("/table/")[-1].split("/")[0]
               a = df_table.alias("a")
               b = self.spark.read.table(f"{self.catalog}.{self.schema}.{reference_table}").alias("b")
@@ -155,17 +159,18 @@ class DisplayValue:
               is_display_reference_field = self.check_if_display_is_reference(table, row['element'])
 
               if is_display_reference_field:
-                reference_fields = self.return_display_value_if_reference(
-                  table,
-                  row['element'],
-                  im
-                )
-                display_value = reference_fields['display_value']
-                reference_table_for_display_value = reference_fields['reference_table']
-
+                  reference_fields = self.return_display_value_if_reference(
+                      table, row['element'], im
+                  )
+                  if reference_fields:  # <-- this is the new guard to handle None reference fields
+                      display_value = reference_fields['display_value']
+                      reference_table_for_display_value = reference_fields['reference_table']
+                  else:
+                      display_value = row['element']
+                      reference_table_for_display_value = None
               else:
-                reference_table_for_display_value = None
-                display_value = row['element']
+                  reference_table_for_display_value = None
+                  display_value = row['element']
 
 
               display_list.append(
@@ -256,15 +261,17 @@ class DisplayValue:
           F.col(f"{row['sys_name']}_display").getField("value") == reference_table_for_display_value_df.ref_sys_id,
           'left'
         )
-        .drop(f"{row['sys_name']}_display")
-        .select(
-          *[c for c in table_ref_joined_df.columns if c != f"{row['sys_name']}_display"],
-          F.col(f"{row['sys_name']}_ref_display").alias(f"{row['sys_name']}_display"))
+        .drop(f"{row['sys_name']}_display", row['sys_name'], "ref_sys_id")
+        .withColumnRenamed(f"{row['sys_name']}_ref_display", row['sys_name'])
         )
         
         return table_ref_joined_df
     
       else:
+        table_ref_joined_df = (table_ref_joined_df
+          .drop(row['sys_name'])
+          .withColumnRenamed(f"{row['sys_name']}_display", row['sys_name'])
+        )
         return table_ref_joined_df
       
     else: 
