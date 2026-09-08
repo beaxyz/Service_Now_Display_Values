@@ -22,16 +22,10 @@ def main():
 
     all_tables_to_be_ingested = [t for t in all_tables_to_be_ingested if t not in tables_to_exclude]
 
-    existing_pipeline_tables = mgr.get_existing_pipeline_tables()
-    
-    if existing_pipeline_tables:
-        print(f"Tables to be ingested: {existing_pipeline_tables}")
-        # Pass the full list -- update() replaces the entire pipeline definition
-        mgr.update_servicenow_pipeline(
+    pipeline_id = mgr.create_or_update_servicenow_pipeline(
             table_list=all_tables_to_be_ingested
         )
-    else:
-        print("No tables to be ingested")
+    print(f"Pipeline created or updated with ID: {pipeline_id}")
 
 if __name__ == "__main__":
     main()

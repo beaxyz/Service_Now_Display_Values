@@ -32,4 +32,4 @@ tables_to_exclude = ['sys_package'] #Removing sys_package due to permissions ins
 connection_name = "servicenow-latest"
 
 # Pipeline name of the service now pipeline to be used for ingestion. If a lakeflow connect pipeline exists, then just replace this here and we will use this to update this existing pipeline
-pipeline_name = "[dev beatrice_liew] servicenow_bliew_ingestion"
+pipeline_name = "ingest_servicenow_pipeline"

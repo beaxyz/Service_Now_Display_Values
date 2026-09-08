@@ -114,11 +114,11 @@ class IngestionManager:
       return set()
 
   # Create a Lakeflow Connect Ingestion Pipeline that ingests the list of tables & reference tables required
-  def update_servicenow_pipeline(
+  def create_or_update_servicenow_pipeline(
   self,
   table_list
   ):
-    """Update an existing pipeline with the new list of tables."""
+    """Create or Update an existing pipeline with the new list of tables."""
     from databricks.sdk.service.pipelines import (
     IngestionPipelineDefinition,
     IngestionConfig,
@@ -140,20 +140,32 @@ class IngestionManager:
         connection_name=self.connection_name,
         objects=objects,
     )
+    existing_pipeline = next(
+        (p for p in self.w.pipelines.list_pipelines() if p.name == self.pipeline_name),
+        None,
+    )
 
-    for p in self.w.pipelines.list_pipelines():
-      if p.name == self.pipeline_name:
-        self.w.pipelines.update(
-                pipeline_id=p.pipeline_id,
-                name=p.name,
-                catalog=self.catalog,
-                schema=self.schema,
-                ingestion_definition=ingestion_pipeline_def,
-                serverless=True,
-              )
-        print(f"Updated pipeline {p.pipeline_id} with {len(table_list)} tables")
-        return
+    if existing_pipeline:
+      self.w.pipelines.update(
+              pipeline_id=existing_pipeline.pipeline_id,
+              name=existing_pipeline.name,
+              catalog=self.catalog,
+              schema=self.schema,
+              ingestion_definition=ingestion_pipeline_def,
+              serverless=True,
+            )
+      print(f"Updated pipeline {existing_pipeline.pipeline_id} with {len(table_list)} tables")
+      return existing_pipeline.pipeline_id
 
-    print(f"Warning: pipeline '{self.pipeline_name}' not found")
+    else:
+      created = self.w.pipelines.create(
+        name=self.pipeline_name,
+        catalog=self.catalog,
+        schema=self.schema,
+        ingestion_definition=ingestion_pipeline_def,
+        serverless=True,
+      )
+      print(f"Created pipeline {self.pipeline_name} with {len(table_list)} tables")
+      return created.pipeline_id
 
 

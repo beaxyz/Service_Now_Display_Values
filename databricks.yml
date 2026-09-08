@@ -25,8 +25,8 @@ targets:
 
 resources:
   pipelines:
-    ingest_servicenow_pipeline:
-      name: "servicenow_bliew_ingestion"
+    ingest_servicenow_seed_tables_pipeline:
+      name: "servicenow_bliew_ingestion_seed_tables"
       serverless: true
       catalog: ${var.catalog}
       schema: ${var.schema}
@@ -56,7 +56,6 @@ resources:
         "catalog": ${var.catalog}
         "schema": ${var.schema}
         "source_schema": "default"
-        "pipeline_name": "servicenow_bliew_ingestion"
         "connection_name": "servicenow-latest"
 
     extract_display_pipeline:
@@ -71,14 +70,19 @@ resources:
         "catalog": ${var.catalog}
         "schema": ${var.schema}
         "source_schema": "default"
-        "pipeline_name": "servicenow_bliew_ingestion"
         "connection_name": "servicenow-latest"
 
   jobs:
     ingest_job:
       name: "Ingest ServiceNow Tables & Extract Display Values"
       tasks:
+        - task_key: ingest_seed_tables
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.ingest_servicenow_seed_tables_pipeline.id}
+
         - task_key: discover_tables
+          depends_on:
+              - task_key: ingest_seed_tables
           spark_python_task:
             python_file: pipelines/ingest_service_now.py
           environment_key: default
@@ -86,8 +90,9 @@ resources:
         - task_key: ingest_servicenow_tables
           depends_on:
             - task_key: discover_tables
-          pipeline_task:
-            pipeline_id: ${resources.pipelines.ingest_servicenow_pipeline.id}
+          spark_python_task:
+            python_file: pipelines/run_ingest_job.py
+          environment_key: default
 
         - task_key: materialize_mapping_table
           depends_on:
